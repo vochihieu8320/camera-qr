@@ -14,21 +14,21 @@ from pymodbus.client.sync import ModbusTcpClient
 class AutoParkingSystemGUI:
     def __init__(self, root, total_spaces=10, plc_ip="192.168.0.1", plc_port=502):
         self.root = root
-        self.root.title("Auto Parking System")
-        self.root.geometry("1200x800")
+        self.root.title("Auto Parking System - Vietnam")
+        self.root.geometry("1400x900")  # Increased window size
         self.total_spaces = total_spaces
         self.occupied_spaces = set()
         self.last_detected_plate = ""
         self.last_detection_time = 0
-        self.frame_skip = 5
+        self.frame_skip = 3  # Reduced frame skip for better detection
         self.frame_count = 0
         self.running = True
         self.current_frame = None
         self.detected_plate_image = None
         self.plc_client = self.connect_to_plc(plc_ip, plc_port)
 
-        # Initialize EasyOCR
-        self.reader = easyocr.Reader(['en'], gpu=True)
+        # Initialize EasyOCR with Vietnamese support
+        self.reader = easyocr.Reader(['en'], gpu=True)  # Set to False if no GPU available
 
         # Initialize SQLite database
         self.init_database()
@@ -41,6 +41,10 @@ class AutoParkingSystemGUI:
         if not self.cap.isOpened():
             print("Error opening webcam")
             exit()
+        
+        # Set camera resolution for better quality
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
         # Load existing parking data
         self.load_existing_parking_data()
@@ -88,24 +92,24 @@ class AutoParkingSystemGUI:
         self.conn.commit()
 
     def setup_gui(self):
-        """Set up the GUI layout"""
+        """Set up the GUI layout with larger camera feed"""
         # Main container
         main_frame = Frame(self.root)
         main_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        # Left side - Camera and detected plate
-        left_frame = Frame(main_frame)
+        # Left side - Camera and detected plate (increased size)
+        left_frame = Frame(main_frame, width=900)  # Increased width
         left_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
 
         # Camera Feed
         camera_frame = Frame(left_frame)
         camera_frame.pack(pady=(0, 10))
 
-        camera_title = Label(camera_frame, text="Live Camera Feed", font=("Arial", 16, "bold"))
+        camera_title = Label(camera_frame, text="Live Camera Feed", font=("Arial", 18, "bold"))
         camera_title.pack()
 
-        # Increase the size of the camera feed
-        self.camera_label = Label(camera_frame, bg="black", width=300, height=300)  # Larger size
+        # Much larger camera feed
+        self.camera_label = Label(camera_frame, bg="black", width=300, height=300)
         self.camera_label.pack()
 
         # Detected License Plate Section
@@ -123,7 +127,7 @@ class AutoParkingSystemGUI:
         plate_title.pack()
 
         self.plate_display = Label(plate_info_frame, textvariable=self.plate_var,
-                                    font=("Arial", 20, "bold"), fg="green", bg="white",
+                                    font=("Arial", 24, "bold"), fg="green", bg="white",
                                     relief="sunken", padx=20, pady=10)
         self.plate_display.pack()
 
@@ -134,11 +138,11 @@ class AutoParkingSystemGUI:
         plate_image_title = Label(plate_image_frame, text="Detected Plate Image", font=("Arial", 14, "bold"))
         plate_image_title.pack()
 
-        self.plate_image_label = Label(plate_image_frame, bg="gray", width=40, height=15)
+        self.plate_image_label = Label(plate_image_frame, bg="gray", width=50, height=20)
         self.plate_image_label.pack()
 
         # Right side - Parking status and controls
-        right_frame = Frame(main_frame)
+        right_frame = Frame(main_frame, width=400)
         right_frame.pack(side=RIGHT, fill=BOTH, expand=True)
 
         # Parking Statistics
@@ -244,53 +248,148 @@ class AutoParkingSystemGUI:
             stat_label = Label(self.stats_frame_content, text=stat, font=("Arial", 12, "bold"), fg=color)
             stat_label.grid(row=i, column=0, sticky="w", padx=5, pady=2)
 
-    def preprocess_image(self, image):
-        """Enhanced preprocessing for license plates"""
+    def preprocess_image_for_vietnamese_plates(self, image):
+        """Enhanced preprocessing specifically for Vietnamese license plates"""
+        # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-        kernel = np.ones((2, 2), np.uint8)
+        
+        # Apply bilateral filter to reduce noise while preserving edges
+        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+        
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(denoised)
+        
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
+        
+        # Apply morphological operations to clean up
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         morph = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
+        
+        # Apply adaptive thresholding
         thresh = cv2.adaptiveThreshold(morph, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                       cv2.THRESH_BINARY, 11, 2)
+                                       cv2.THRESH_BINARY, 15, 3)
+        
+        # If the image is mostly dark, invert it
         if np.mean(thresh) < 127:
             thresh = cv2.bitwise_not(thresh)
+        
         return thresh
 
-    def correct_ocr_errors(self, text):
-        """Fix common OCR errors for license plates"""
+    def correct_vietnamese_ocr_errors(self, text):
+        """Fix common OCR errors for Vietnamese license plates"""
+        # Vietnamese license plates use specific characters
         corrections = {
-            '6': 'G', '0': 'O', '1': 'I', '5': 'S', '8': 'B',
-            'G': '6', 'O': '0', 'I': '1', 'S': '5', 'B': '8',
+            # Numbers that look like letters
+            '0': 'O', '1': 'I', '5': 'S', '8': 'B', '6': 'G',
+            # Letters that look like numbers
+            'O': '0', 'I': '1', 'S': '5', 'B': '8', 'G': '6',
+            # Common OCR mistakes
+            'Q': '0', 'Z': '2', 'l': '1', 'o': '0',
         }
+        
+        # Remove any non-alphanumeric characters
         cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
-        return ''.join(corrections.get(c, c) for c in cleaned)
+        
+        # Apply corrections
+        corrected = ''.join(corrections.get(c, c) for c in cleaned)
+        
+        return corrected
+
+    def validate_vietnamese_license_plate(self, plate):
+        """Validate Vietnamese license plate format"""
+        if not plate or len(plate) < 8 or len(plate) > 9:
+            return False
+        
+        # Vietnamese license plate patterns:
+        # Format 1: 12A-34567 (8 characters without dash)
+        # Format 2: 12A-345678 (9 characters without dash)
+        # Format 3: 12AB-34567 (9 characters without dash)
+        
+        # Remove any dashes or spaces
+        clean_plate = re.sub(r'[-\s]', '', plate)
+        
+        # Check if it's 8 or 9 characters
+        if len(clean_plate) not in [8, 9]:
+            return False
+        
+        # Check patterns
+        patterns = [
+            r'^[0-9]{2}[A-Z]{1}[0-9]{5}$',  # 12A34567 (8 chars)
+            r'^[0-9]{2}[A-Z]{1}[0-9]{6}$',  # 12A345678 (9 chars)
+            r'^[0-9]{2}[A-Z]{2}[0-9]{5}$',  # 12AB34567 (9 chars)
+        ]
+        
+        return any(re.match(pattern, clean_plate) for pattern in patterns)
 
     def detect_license_plate(self, frame):
-        """Detect license plate from the frame"""
-        processed_frame = self.preprocess_image(frame)
-        detected_plates = self.reader.readtext(processed_frame, allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-
-        for detection in detected_plates:
-            bbox, text, confidence = detection
-            if confidence > 0.5 and len(text) >= 4:  # Minimum length for license plate
-                corrected_text = self.correct_ocr_errors(text)
-                if self.validate_license_plate(corrected_text):  # Validate plate length
-                    # Extract the region of interest (license plate area)
-                    points = np.array(bbox, dtype=np.int32)
-                    x, y, w, h = cv2.boundingRect(points)
-                    # Add some padding
-                    padding = 10
-                    x = max(0, x - padding)
-                    y = max(0, y - padding)
-                    w = min(frame.shape[1] - x, w + 2 * padding)
-                    h = min(frame.shape[0] - y, h + 2 * padding)
-
-                    plate_region = frame[y:y+h, x:x+w]
-                    return corrected_text, plate_region
-        return None, None
+        """Enhanced license plate detection for Vietnamese plates"""
+        # Multiple preprocessing approaches
+        processed_frames = []
+        
+        # Original preprocessing
+        processed_frames.append(self.preprocess_image_for_vietnamese_plates(frame))
+        
+        # Alternative preprocessing with different parameters
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        processed_frames.append(cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2))
+        
+        # Edge detection approach
+        edges = cv2.Canny(gray, 50, 150)
+        processed_frames.append(edges)
+        
+        best_plate = None
+        best_confidence = 0
+        best_plate_region = None
+        
+        # Try detection on each processed frame
+        for processed_frame in processed_frames:
+            try:
+                # Use EasyOCR with specific settings for license plates
+                detected_plates = self.reader.readtext(
+                    processed_frame,
+                    allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                    width_ths=0.7,
+                    height_ths=0.7,
+                    paragraph=False
+                )
+                
+                for detection in detected_plates:
+                    bbox, text, confidence = detection
+                    
+                    # Clean the detected text
+                    corrected_text = self.correct_vietnamese_ocr_errors(text)
+                    
+                    # Validate the plate
+                    if (confidence > 0.4 and 
+                        self.validate_vietnamese_license_plate(corrected_text) and
+                        confidence > best_confidence):
+                        
+                        best_confidence = confidence
+                        best_plate = corrected_text
+                        
+                        # Extract the region of interest with more padding
+                        points = np.array(bbox, dtype=np.int32)
+                        x, y, w, h = cv2.boundingRect(points)
+                        
+                        # Add padding
+                        padding = 20
+                        x = max(0, x - padding)
+                        y = max(0, y - padding)
+                        w = min(frame.shape[1] - x, w + 2 * padding)
+                        h = min(frame.shape[0] - y, h + 2 * padding)
+                        
+                        best_plate_region = frame[y:y+h, x:x+w]
+                        
+            except Exception as e:
+                print(f"Error in plate detection: {e}")
+                continue
+        
+        return best_plate, best_plate_region
 
     def update_camera_feed(self):
-        """Update the camera feed in the GUI"""
+        """Update the camera feed in the GUI with larger display"""
         if not self.running:
             return
 
@@ -298,23 +397,24 @@ class AutoParkingSystemGUI:
         if success:
             self.current_frame = frame.copy()
 
-            # Resize frame for display
-            resized_frame = cv2.resize(frame, (800, 600))  # Larger resolution
+            # Resize frame for larger display
+            resized_frame = cv2.resize(frame, (1000, 750))  # Much larger resolution
             rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(rgb_frame)
             imgtk = ImageTk.PhotoImage(image=img)
             self.camera_label.imgtk = imgtk
             self.camera_label.configure(image=imgtk)
 
-            # Process every few frames
+            # Process every few frames for plate detection
             self.frame_count += 1
             if self.frame_count % self.frame_skip == 0:
-                plate_text, plate_image = self.detect_license_plate(resized_frame)
+                # Use original full resolution frame for detection
+                plate_text, plate_image = self.detect_license_plate(self.current_frame)
                 current_time = time.time()
 
                 if plate_text and plate_text != self.last_detected_plate:
                     # Check if enough time has passed since last detection
-                    if current_time - self.last_detection_time > 3:  # 3 second cooldown
+                    if current_time - self.last_detection_time > 2:  # 2 second cooldown
                         self.last_detected_plate = plate_text
                         self.last_detection_time = current_time
                         self.plate_var.set(f"Plate: {plate_text}")
@@ -327,20 +427,21 @@ class AutoParkingSystemGUI:
 
                         # Check if this plate is already parked
                         if not self.is_plate_already_parked(plate_text):
+                            # Save the full frame image, not just the plate region
                             self.store_parking_data(plate_text, self.current_frame, plate_image)
                         else:
                             # Vehicle is leaving
                             self.handle_vehicle_exit(plate_text)
 
-        self.root.after(10, self.update_camera_feed)
+        self.root.after(8, self.update_camera_feed)  # Faster update for smoother video
 
     def display_plate_image(self, plate_image):
         """Display the detected license plate image"""
         if plate_image is not None:
             # Resize the plate image for display
             height, width = plate_image.shape[:2]
-            if width > 200:
-                scale = 200 / width
+            if width > 300:
+                scale = 300 / width
                 new_width = int(width * scale)
                 new_height = int(height * scale)
                 plate_image = cv2.resize(plate_image, (new_width, new_height))
@@ -401,8 +502,8 @@ class AutoParkingSystemGUI:
                 if not os.path.exists('parking_images'):
                     os.makedirs('parking_images')
 
-                # Save full frame image
-                image_filename = f"parking_images/plate_{plate}_{entry_time.strftime('%Y%m%d_%H%M%S')}.jpg"
+                # Save FULL frame image (not just plate region)
+                image_filename = f"parking_images/full_frame_{plate}_{entry_time.strftime('%Y%m%d_%H%M%S')}.jpg"
                 cv2.imwrite(image_filename, frame)
 
                 # Save plate region image if available
@@ -418,7 +519,6 @@ class AutoParkingSystemGUI:
                 ''', (plate, entry_time, space))
 
                 # Insert into parking_records table
-                # Check if image_path column exists
                 self.cursor.execute("PRAGMA table_info(parking_records)")
                 columns = [column[1] for column in self.cursor.fetchall()]
                 
@@ -505,9 +605,6 @@ class AutoParkingSystemGUI:
                 print(f"Error writing to PLC: {e}")
         else:
             print("PLC client is not connected")
-
-    def validate_license_plate(self, plate):
-        return True;
 
 def main():
     root = Tk()
